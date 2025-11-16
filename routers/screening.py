@@ -1,75 +1,97 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from difflib import SequenceMatcher
-import re
+from typing import Optional
+from database import get_session, Resume
 from openai import OpenAI
-import os
+import os, re
+import numpy as np
+from numpy.linalg import norm
 from dotenv import load_dotenv
 
-# Load environment variables (for OpenAI key)
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
 router = APIRouter(prefix="/api/screening", tags=["screening"])
+
+def sanitize_text(s: Optional[str]) -> str:
+    return (s or "").strip()
+
+def extract_keywords(text: str):
+    toks = re.findall(r"\b[a-zA-Z0-9+#\.+]{2,}\b", (text or "").lower())
+    toks = [t for t in toks if len(t) > 2]
+    seen = set()
+    out = []
+    for t in toks:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+def embed_text(text: str):
+    text_clip = text[:3000]
+    resp = client.embeddings.create(model=EMBED_MODEL, input=text_clip)
+    vec = np.array(resp.data[0].embedding, dtype=float)
+    return vec
+
+def cosine(a, b) -> float:
+    if a is None or b is None:
+        return 0.0
+    return float(np.dot(a, b) / (norm(a) * norm(b) + 1e-9))
 
 class ScreenInput(BaseModel):
     resume_text: str
     job_description: str
 
-
-def similarity(a: str, b: str) -> float:
-    """Quick normalized similarity as baseline (0–1)."""
-    matcher = SequenceMatcher(None, a.lower(), b.lower())
-    return matcher.ratio()
-
-
-def extract_keywords(text: str):
-    """Extract simple keywords (longer than 3 chars)."""
-    words = re.findall(r"\b[a-zA-Z]{4,}\b", text.lower())
-    unique = list(dict.fromkeys(words))
-    return unique
-
-
-@router.post("/match")
-def match_resume(payload: ScreenInput):
-    """Compare resume with job description and score similarity."""
-    resume = payload.resume_text or ""
-    jd = payload.job_description or ""
-
-    # 1️⃣ Basic text similarity score
-    base_score = round(similarity(resume, jd) * 100, 2)
-
-    # 2️⃣ Extract matching keywords
-    jd_keywords = extract_keywords(jd)
-    matched = [kw for kw in jd_keywords if kw in resume.lower()]
-
-    # 3️⃣ (Optional) AI feedback using GPT — makes it “smart”
-    prompt = f"""
-    You are an HR screening assistant.
-    Compare this resume and job description. 
-    Give a short feedback about the candidate’s fit (max 3 sentences).
-    
-    Resume:
-    {resume}
-
-    Job Description:
-    {jd}
-    """
+@router.post("/score")
+def score_single(payload: ScreenInput):
+    resume_text = sanitize_text(payload.resume_text)
+    job_desc = sanitize_text(payload.job_description)
+    if not resume_text or not job_desc:
+        return {"error": "resume_text and job_description are required."}
 
     try:
-        ai_feedback = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a skilled HR assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        ).choices[0].message.content.strip()
+        jvec = embed_text(job_desc)
+        rvec = embed_text(resume_text)
+        sem_sim = cosine(jvec, rvec)
     except Exception:
-        ai_feedback = "AI feedback unavailable (check OpenAI key)."
+        sem_sim = 0.0
 
-    # 4️⃣ Return combined results
+    jkw = set(extract_keywords(job_desc))
+    rkw = set(extract_keywords(resume_text))
+    matched = list(jkw.intersection(rkw))
+
+    kw_score = 0.0
+    if jkw:
+        kw_score = min(1.0, len(matched) / max(1, len(jkw)))
+
+    final = (0.75 * sem_sim) + (0.20 * kw_score)
+    final_score = round(float(final * 100), 2)
+
+    ai_feedback = ""
+    try:
+        prompt = (
+            f"You are a concise hiring assistant.\nJob description:\n{job_desc[:1200]}\n\n"
+            f"Resume:\n{resume_text[:1600]}\n\n"
+            "Give 3 concise bullets to improve this resume to match the JD."
+        )
+        resp = client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": "You are a helpful HR assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=180,
+        )
+        ai_feedback = resp.choices[0].message.content.strip()
+    except Exception:
+        ai_feedback = ""
+
     return {
-        "match_score": base_score,
-        "matched_keywords": matched[:20],
-        "ai_feedback": ai_feedback
+        "score": final_score,
+        "matched_keywords": matched[:60],
+        "ai_feedback": ai_feedback,
+        "sem_sim": round(sem_sim, 4),
+        "kw_score": round(kw_score, 4),
     }

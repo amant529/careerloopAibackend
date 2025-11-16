@@ -1,64 +1,48 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from openai import OpenAI
-import os
-from dotenv import load_dotenv
+from database import get_session, Resume
 
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+router = APIRouter(prefix="/api/builder", tags=["builder"])
 
-router = APIRouter(prefix="/api/resume", tags=["resume"])
-
-# Input schema for resume data
 class ResumeInput(BaseModel):
     name: str
-    summary: str
-    skills: str
-    experience: str
-    template: str = "classic"  # optional template name
+    email: str = None
+    summary: str = None
+    skills: str = None
+    experience: str = None
+    template: str = "template-a"
 
+@router.post("/generate")
+def generate_resume(data: ResumeInput):
+    lines = []
+    lines.append(data.name or "")
+    if data.email:
+        lines.append(data.email)
+    if data.summary:
+        lines.append("\nProfessional Summary\n" + data.summary)
+    if data.experience:
+        lines.append("\nExperience\n" + data.experience)
+    if data.skills:
+        lines.append("\nSkills\n" + data.skills)
 
-@router.post("/")
-def create_resume(data: ResumeInput):
-    # Prompt for AI
-    prompt = f"""
-    Create a professional, well-written resume for the following person.
-    Name: {data.name}
-    Summary: {data.summary}
-    Skills: {data.skills}
-    Experience: {data.experience}
+    ai_resume = "\n".join(lines)
 
-    Format it nicely with sections like:
-    - Professional Summary
-    - Key Skills
-    - Work Experience
-    - Education
-    - Achievements
-    """
+    with get_session() as s:
+        r = Resume(name=data.name, email=data.email, resume_text=ai_resume)
+        s.add(r)
+        s.commit()
+        s.refresh(r)
 
-    # Call OpenAI API
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a professional resume writer."},
-            {"role": "user", "content": prompt}
-        ]
+    html_resume = (
+        f"<div class='resume-template {data.template}'>"
+        f"<h1>{data.name}</h1>"
+        f"<pre style='white-space:pre-wrap'>{ai_resume}</pre>"
+        f"</div>"
     )
 
-    # Extract text
-    ai_resume = response.choices[0].message.content.strip()
-
-    # Convert resume text into basic HTML
-    html_resume = f"""
-    <div class="resume-template {data.template}">
-        <h1>{data.name}</h1>
-        <pre style='font-family: sans-serif; white-space: pre-wrap;'>{ai_resume}</pre>
-    </div>
-    """
-
-    # Return structured response
     return {
+        "id": r.id,
         "name": data.name,
         "html_resume": html_resume,
-        "template_used": data.template
+        "template_used": data.template,
     }

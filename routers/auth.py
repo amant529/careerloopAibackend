@@ -2,18 +2,24 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta
 from sqlmodel import select
+
+# 🔥 Correct import that works on Render
+from ..email_utils import send_otp_email
+
 from database import get_session, User
-from email_utils import send_otp_email
 import random
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+
 class EmailReq(BaseModel):
     email: EmailStr
+
 
 class VerifyReq(BaseModel):
     email: EmailStr
     otp: str
+
 
 @router.post("/send-otp")
 def send_otp(data: EmailReq):
@@ -31,13 +37,17 @@ def send_otp(data: EmailReq):
         user.otp_expiry = expiry
         session.commit()
 
+    # Send email using utility
     send_otp_email(data.email, otp)
+
     return {"message": "OTP sent"}
+
 
 @router.post("/verify")
 def verify(data: VerifyReq):
     with get_session() as session:
         user = session.exec(select(User).where(User.email == data.email)).first()
+
         if not user or not user.otp:
             raise HTTPException(status_code=400, detail="OTP not requested")
 

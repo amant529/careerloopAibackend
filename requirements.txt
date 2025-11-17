@@ -9,3 +9,4 @@ mammoth
 sqlalchemy
 pydantic<2
 python-multipart
+email-validator

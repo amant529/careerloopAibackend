@@ -1,77 +1,32 @@
-from fastapi import APIRouter, UploadFile, File, Form
-from pathlib import Path
-from database import get_session, Resume
-import uuid
-import mammoth
-import pdfplumber
+from fastapi import APIRouter
+from pydantic import BaseModel
+from typing import List, Optional
+from .screening import score_resume, ScreenRequest
 
-router = APIRouter(prefix="/api/upload", tags=["upload"])
+router = APIRouter(prefix="/api/screening", tags=["Bulk Screening"])
 
-UPLOAD_DIR = Path("./uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+class BulkItem(BaseModel):
+    resume_id: Optional[int] = None
+    resume_text: str
 
-def extract_text_from_docx(path: Path) -> str:
-    try:
-        with open(path, "rb") as f:
-            res = mammoth.extract_raw_text(f)
-            return res.value or ""
-    except Exception:
-        return ""
+class BulkRequest(BaseModel):
+    job_description: str
+    items: List[BulkItem]
 
-def extract_text_from_pdf(path: Path) -> str:
-    texts = []
-    try:
-        with pdfplumber.open(path) as pdf:
-            for p in pdf.pages:
-                texts.append(p.extract_text() or "")
-    except Exception:
-        return ""
-    return "\n".join(texts)
-
-@router.post("/resume")
-async def upload_resume(
-    file: UploadFile = File(...),
-    name: str = Form(None),
-    email: str = Form(None),
-    job_id: int = Form(None),
-):
-    ext = Path(file.filename).suffix.lower()
-    uid = str(uuid.uuid4())
-    dest = UPLOAD_DIR / f"{uid}{ext}"
-
-    content = await file.read()
-    with open(dest, "wb") as fh:
-        fh.write(content)
-
-    text = ""
-    try:
-        if ext == ".docx":
-            text = extract_text_from_docx(dest)
-        elif ext == ".pdf":
-            text = extract_text_from_pdf(dest)
-        else:
-            try:
-                text = content.decode("utf-8", errors="replace")
-            except Exception:
-                text = ""
-    except Exception:
-        text = ""
-
-    with get_session() as s:
-        r = Resume(
-            name=name,
-            email=email,
-            filename=file.filename,
-            file_path=str(dest),
-            resume_text=text,
-            job_id=job_id,
-        )
-        s.add(r)
-        s.commit()
-        s.refresh(r)
-
-    return {
-        "id": r.id,
-        "filename": r.filename,
-        "text_snippet": (r.resume_text or "")[:2000],
-    }
+@router.post("/bulk")
+def bulk_screening(req: BulkRequest):
+    results = []
+    for item in req.items:
+        scored = score_resume(ScreenRequest(
+            resume_text=item.resume_text,
+            job_description=req.job_description
+        ))
+        results.append({
+            "resume_id": item.resume_id,
+            "score": scored.get("score", 0),
+            "matched": scored.get("matched_keywords", []),
+            "feedback": scored.get("ai_feedback", "")
+        })
+    # sort best first
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return {"results": results}

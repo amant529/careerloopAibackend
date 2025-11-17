@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from sqlmodel import select
 
 # 🔥 Correct import that works on Render
-from ..email_utils import send_otp_email
+from email_utils import send_otp_email
 
 from database import get_session, User
 import random

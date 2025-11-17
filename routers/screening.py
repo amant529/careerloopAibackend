@@ -1,97 +1,96 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 from database import get_session, Resume
 from openai import OpenAI
-import os, re
-import numpy as np
-from numpy.linalg import norm
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
-router = APIRouter(prefix="/api/screening", tags=["screening"])
+router = APIRouter(prefix="/api/builder", tags=["Resume Builder"])
 
-def sanitize_text(s: Optional[str]) -> str:
-    return (s or "").strip()
+class ResumeWizardInput(BaseModel):
+    name: str
+    email: Optional[EmailStr] = None
+    target_role: Optional[str] = None
+    experience_level: Optional[str] = None
+    achievements: Optional[str] = None
+    skills: Optional[str] = None
+    projects: Optional[str] = None
+    education: Optional[str] = None
+    certifications: Optional[str] = None
+    extras: Optional[str] = None
+    template: str = "template-a"
+    consent: bool = False              # ✅ checkbox from frontend
 
-def extract_keywords(text: str):
-    toks = re.findall(r"\b[a-zA-Z0-9+#\.+]{2,}\b", (text or "").lower())
-    toks = [t for t in toks if len(t) > 2]
-    seen = set()
-    out = []
-    for t in toks:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+@router.post("/generate")
+def generate_resume(data: ResumeWizardInput):
+    if not data.consent:
+        raise HTTPException(status_code=400, detail="Consent is required to generate and store resume.")
 
-def embed_text(text: str):
-    text_clip = text[:3000]
-    resp = client.embeddings.create(model=EMBED_MODEL, input=text_clip)
-    vec = np.array(resp.data[0].embedding, dtype=float)
-    return vec
+    system_prompt = (
+        "You are a world-class resume writer and ATS optimization expert.\n"
+        "Take rough bullet notes and short phrases from the user and turn them into a polished resume.\n"
+        "Rules:\n"
+        "- Fix grammar and clarity.\n"
+        "- Convert short phrases into impactful bullet points (4–6 per section max).\n"
+        "- Use strong action verbs, but do NOT invent fake experience or numbers.\n"
+        "- Structure output with clear headings: NAME & CONTACT, PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE / PROJECTS, EDUCATION, CERTIFICATIONS, ACHIEVEMENTS, EXTRAS.\n"
+        "- Use simple, recruiter-friendly language.\n"
+    )
 
-def cosine(a, b) -> float:
-    if a is None or b is None:
-        return 0.0
-    return float(np.dot(a, b) / (norm(a) * norm(b) + 1e-9))
-
-class ScreenInput(BaseModel):
-    resume_text: str
-    job_description: str
-
-@router.post("/score")
-def score_single(payload: ScreenInput):
-    resume_text = sanitize_text(payload.resume_text)
-    job_desc = sanitize_text(payload.job_description)
-    if not resume_text or not job_desc:
-        return {"error": "resume_text and job_description are required."}
+    user_prompt = (
+        "Generate a complete resume that looks like it was typed in Word — simple headings and bullet points.\n\n"
+        f"Name: {data.name}\n"
+        f"Email: {data.email}\n"
+        f"Target Role: {data.target_role}\n"
+        f"Experience Level: {data.experience_level}\n"
+        f"Achievements (raw):\n{data.achievements}\n\n"
+        f"Skills (raw):\n{data.skills}\n\n"
+        f"Projects / Experience (raw):\n{data.projects}\n\n"
+        f"Education (raw):\n{data.education}\n\n"
+        f"Certifications (raw):\n{data.certifications}\n\n"
+        f"Extras (raw):\n{data.extras}\n\n"
+    )
 
     try:
-        jvec = embed_text(job_desc)
-        rvec = embed_text(resume_text)
-        sem_sim = cosine(jvec, rvec)
-    except Exception:
-        sem_sim = 0.0
-
-    jkw = set(extract_keywords(job_desc))
-    rkw = set(extract_keywords(resume_text))
-    matched = list(jkw.intersection(rkw))
-
-    kw_score = 0.0
-    if jkw:
-        kw_score = min(1.0, len(matched) / max(1, len(jkw)))
-
-    final = (0.75 * sem_sim) + (0.20 * kw_score)
-    final_score = round(float(final * 100), 2)
-
-    ai_feedback = ""
-    try:
-        prompt = (
-            f"You are a concise hiring assistant.\nJob description:\n{job_desc[:1200]}\n\n"
-            f"Resume:\n{resume_text[:1600]}\n\n"
-            "Give 3 concise bullets to improve this resume to match the JD."
-        )
         resp = client.chat.completions.create(
             model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": "You are a helpful HR assistant."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
-            temperature=0.2,
-            max_tokens=180,
+            temperature=0.45,
+            max_tokens=900,
         )
-        ai_feedback = resp.choices[0].message.content.strip()
-    except Exception:
-        ai_feedback = ""
+        resume_text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
+
+    with get_session() as s:
+        r = Resume(
+            name=data.name,
+            email=data.email,
+            resume_text=resume_text,
+            consent=data.consent,
+        )
+        s.add(r)
+        s.commit()
+        s.refresh(r)
+
+    html = (
+        "<div class='resume-template "
+        + data.template
+        + "'><pre style='white-space:pre-wrap;'>"
+        + resume_text
+        + "</pre></div>"
+    )
 
     return {
-        "score": final_score,
-        "matched_keywords": matched[:60],
-        "ai_feedback": ai_feedback,
-        "sem_sim": round(sem_sim, 4),
-        "kw_score": round(kw_score, 4),
+        "id": r.id,
+        "resume": resume_text,
+        "html": html,
+        "template": data.template,
     }

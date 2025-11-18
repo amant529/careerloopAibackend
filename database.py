@@ -1,39 +1,52 @@
-from sqlmodel import SQLModel, Field, create_engine, Session
-from typing import Optional
-from datetime import datetime
-import os
+import sqlite3
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./careerloop.db")
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+DB = "careerloop.db"
 
-# USERS
-class User(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    email: str = Field(index=True, unique=True)
-    subscription_status: str = Field(default="inactive")  # inactive | active
-    otp: Optional[str] = None
-    otp_expiry: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-# RESUMES
-class Resume(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    name: Optional[str] = None
-    email: Optional[str] = None
-    resume_text: Optional[str] = None
-    consent: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-# ANALYTICS EVENTS
-class AnalyticsEvent(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    visitor_id: Optional[str] = Field(default=None, index=True)
-    email: Optional[str] = Field(default=None, index=True)
-    event_type: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+def connect():
+    return sqlite3.connect(DB, check_same_thread=False)
 
 def init_db():
-    SQLModel.metadata.create_all(engine)
+    conn = connect()
+    cur = conn.cursor()
 
-def get_session():
-    return Session(engine)
+    # Create analytics tables if not exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            visitor_id TEXT,
+            page TEXT,
+            ts TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            visitor_id TEXT,
+            email TEXT,
+            event_type TEXT,
+            ts TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# === NEW FUNCTIONS (Fixing error) ===
+
+def save_visit(visitor_id, page, ts):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO visits (visitor_id, page, ts) VALUES (?, ?, ?)",
+                (visitor_id, page, ts))
+    conn.commit()
+    conn.close()
+
+def save_event(visitor_id, email, event_type, ts):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO events (visitor_id, email, event_type, ts) VALUES (?, ?, ?, ?)",
+                (visitor_id, email, event_type, ts))
+    conn.commit()
+    conn.close()

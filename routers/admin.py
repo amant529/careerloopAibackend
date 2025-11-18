@@ -1,33 +1,33 @@
-from fastapi import APIRouter
-from pydantic import BaseModel, EmailStr
-from sqlmodel import select
-from database import get_session, User, Resume
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from database import get_session
 
-router = APIRouter(prefix="/api/admin", tags=["Admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-class SubReq(BaseModel):
-    email: EmailStr
+class SubscribeRequest(BaseModel):
+    email: str
+
 
 @router.post("/subscribe")
-def sub(data: SubReq):
-    with get_session() as s:
-        user = s.exec(select(User).where(User.email == data.email)).first()
-        if not user:
-            user = User(email=data.email, subscription_status="active")
-            s.add(user)
-        else:
-            user.subscription_status = "active"
-        s.commit()
-    return {"message": "active"}
+def subscribe(payload: SubscribeRequest):
+    conn, cur = get_session()
 
-@router.get("/overview")
-def stats():
-    with get_session() as s:
-        users = s.exec(select(User)).all()
-        resumes = s.exec(select(Resume)).all()
+    # Ensure user exists
+    cur.execute("INSERT OR IGNORE INTO users (email) VALUES (?)", (payload.email,))
 
-    return {
-        "users": len(users),
-        "active_subs": len([u for u in users if u.subscription_status == "active"]),
-        "resumes": len(resumes),
-    }
+    # Update subscription status
+    cur.execute("UPDATE users SET subscribed=1 WHERE email=?", (payload.email,))
+    conn.commit()
+    conn.close()
+
+    return {"message": "Subscribed successfully", "email": payload.email}
+
+
+@router.get("/subscribers")
+def subscribers():
+    conn, cur = get_session()
+    cur.execute("SELECT email FROM users WHERE subscribed=1")
+    rows = cur.fetchall()
+    conn.close()
+
+    return {"subscribers": [r[0] for r in rows]}

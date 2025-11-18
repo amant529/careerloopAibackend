@@ -1,64 +1,46 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, EmailStr
-from datetime import datetime, timedelta
-from sqlmodel import select
-
-# 🔥 Correct import that works on Render
-from email_utils import send_otp_email
-
-from database import get_session, User
+from pydantic import BaseModel
+from database import get_session
 import random
 
-router = APIRouter(prefix="/auth", tags=["Auth"])
+router = APIRouter(prefix="/auth", tags=["auth"])
 
+class EmailRequest(BaseModel):
+    email: str
 
-class EmailReq(BaseModel):
-    email: EmailStr
-
-
-class VerifyReq(BaseModel):
-    email: EmailStr
+class VerifyRequest(BaseModel):
+    email: str
     otp: str
 
 
 @router.post("/send-otp")
-def send_otp(data: EmailReq):
-    otp = str(random.randint(100000, 999999))
-    expiry = datetime.utcnow() + timedelta(minutes=5)
+def send_otp(payload: EmailRequest):
+    otp = str(random.randint(111111, 999999))
 
-    with get_session() as session:
-        user = session.exec(select(User).where(User.email == data.email)).first()
-        if not user:
-            user = User(email=data.email)
-            session.add(user)
-            session.flush()
+    conn, cur = get_session()
+    cur.execute("INSERT OR IGNORE INTO users (email, otp) VALUES (?, ?)", (payload.email, otp))
+    cur.execute("UPDATE users SET otp=? WHERE email=?", (otp, payload.email))
+    conn.commit()
+    conn.close()
 
-        user.otp = otp
-        user.otp_expiry = expiry
-        session.commit()
-
-    # Send email using utility
-    send_otp_email(data.email, otp)
-
-    return {"message": "OTP sent"}
+    # TODO: integrate email service later
+    print("DEBUG OTP:", otp)
+    return {"message": "OTP sent (debug mode)", "otp": otp}
 
 
 @router.post("/verify")
-def verify(data: VerifyReq):
-    with get_session() as session:
-        user = session.exec(select(User).where(User.email == data.email)).first()
+def verify_user(payload: VerifyRequest):
+    conn, cur = get_session()
+    cur.execute("SELECT otp FROM users WHERE email=?", (payload.email,))
+    row = cur.fetchone()
 
-        if not user or not user.otp:
-            raise HTTPException(status_code=400, detail="OTP not requested")
+    if not row or row[0] != payload.otp:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Invalid OTP")
 
-        if datetime.utcnow() > user.otp_expiry:
-            raise HTTPException(status_code=400, detail="OTP expired")
+    # Clear OTP
+    cur.execute("UPDATE users SET otp=NULL WHERE email=?", (payload.email,))
+    conn.commit()
+    conn.close()
 
-        if data.otp != user.otp:
-            raise HTTPException(status_code=400, detail="Invalid OTP")
-
-        user.otp = None
-        user.otp_expiry = None
-        session.commit()
-
-    return {"message": "verified"}
+    return {"message": "Login successful"}

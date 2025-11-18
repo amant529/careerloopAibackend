@@ -1,19 +1,27 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from database import get_session, Resume
-from openai import OpenAI
-from dotenv import load_dotenv
 import os
 
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from openai import OpenAI
 
-router = APIRouter(prefix="/api/builder", tags=["Resume Builder"])
+# -------- OpenAI client (server-side only) --------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    # Render will log this; frontend will see 500
+    print("WARNING: OPENAI_API_KEY not set in environment")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-class ResumeWizardInput(BaseModel):
+router = APIRouter(
+    prefix="/api/builder",
+    tags=["builder"],
+)
+
+
+# -------- Request models --------
+class ResumeInput(BaseModel):
     name: str
-    email: Optional[EmailStr] = None
+    email: EmailStr
     target_role: Optional[str] = None
     experience_level: Optional[str] = None
     achievements: Optional[str] = None
@@ -22,75 +30,86 @@ class ResumeWizardInput(BaseModel):
     education: Optional[str] = None
     certifications: Optional[str] = None
     extras: Optional[str] = None
-    template: str = "template-a"
-    consent: bool = False              # ✅ checkbox from frontend
 
+
+class SaveResumeInput(BaseModel):
+    email: EmailStr
+    resume: str
+
+
+# -------- Routes --------
 @router.post("/generate")
-def generate_resume(data: ResumeWizardInput):
-    if not data.consent:
-        raise HTTPException(status_code=400, detail="Consent is required to generate and store resume.")
-
-    system_prompt = (
-        "You are a world-class resume writer and ATS optimization expert.\n"
-        "Take rough bullet notes and short phrases from the user and turn them into a polished resume.\n"
-        "Rules:\n"
-        "- Fix grammar and clarity.\n"
-        "- Convert short phrases into impactful bullet points (4–6 per section max).\n"
-        "- Use strong action verbs, but do NOT invent fake experience or numbers.\n"
-        "- Structure output with clear headings: NAME & CONTACT, PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE / PROJECTS, EDUCATION, CERTIFICATIONS, ACHIEVEMENTS, EXTRAS.\n"
-        "- Use simple, recruiter-friendly language.\n"
-    )
-
-    user_prompt = (
-        "Generate a complete resume that looks like it was typed in Word — simple headings and bullet points.\n\n"
-        f"Name: {data.name}\n"
-        f"Email: {data.email}\n"
-        f"Target Role: {data.target_role}\n"
-        f"Experience Level: {data.experience_level}\n"
-        f"Achievements (raw):\n{data.achievements}\n\n"
-        f"Skills (raw):\n{data.skills}\n\n"
-        f"Projects / Experience (raw):\n{data.projects}\n\n"
-        f"Education (raw):\n{data.education}\n\n"
-        f"Certifications (raw):\n{data.certifications}\n\n"
-        f"Extras (raw):\n{data.extras}\n\n"
-    )
+async def generate_resume(body: ResumeInput):
+    """
+    Takes rough user input and returns a polished ATS-friendly resume.
+    Called from frontend at /api/builder/generate
+    """
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI key not configured on server"
+        )
 
     try:
+        # Build a structured prompt
+        prompt = f"""
+You are an expert resume writer for ATS systems.
+
+Create a single-page, ATS-optimized resume in plain text using the details below.
+Keep it professional, concise and strongly achievement-oriented.
+
+Use sections:
+- Name & Contact
+- Professional Summary
+- Skills
+- Experience
+- Projects (if fresher, emphasize projects & internships)
+- Education
+- Certifications
+- Extra / Achievements
+
+User data (rough notes, clean and expand them):
+Name: {body.name}
+Email: {body.email}
+Target Role: {body.target_role}
+Experience Level: {body.experience_level}
+Achievements: {body.achievements}
+Skills: {body.skills}
+Projects & Experience: {body.projects}
+Education: {body.education}
+Certifications: {body.certifications}
+Extras: {body.extras}
+"""
+
         resp = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": "You write powerful ATS-friendly resumes."},
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.45,
-            max_tokens=900,
+            temperature=0.4,
         )
+
         resume_text = resp.choices[0].message.content.strip()
+        return {"resume": resume_text}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
+        # Log on server; send safe error to client
+        print("Resume generation backend error:", repr(e))
+        raise HTTPException(status_code=500, detail="AI generation failed")
 
-    with get_session() as s:
-        r = Resume(
-            name=data.name,
-            email=data.email,
-            resume_text=resume_text,
-            consent=data.consent,
-        )
-        s.add(r)
-        s.commit()
-        s.refresh(r)
 
-    html = (
-        "<div class='resume-template "
-        + data.template
-        + "'><pre style='white-space:pre-wrap;'>"
-        + resume_text
-        + "</pre></div>"
-    )
-
-    return {
-        "id": r.id,
-        "resume": resume_text,
-        "html": html,
-        "template": data.template,
-    }
+@router.post("/save")
+async def save_resume(body: SaveResumeInput):
+    """
+    For now just acknowledge save.
+    In future you can connect to database to actually persist.
+    Frontend just needs 200 OK.
+    """
+    try:
+        # TODO: integrate with database if you want to really store it.
+        print(f"[SAVE RESUME] {body.email} | {len(body.resume)} chars")
+        return {"ok": True}
+    except Exception as e:
+        print("Save resume error:", repr(e))
+        raise HTTPException(status_code=500, detail="Could not save resume")

@@ -1,27 +1,92 @@
-from fastapi import APIRouter, Depends
-from utils import verify_token
-from models import ScreeningRequest, BulkScreeningRequest
-from openai_service import ats_screen, bulk_screen
-from database import db
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from openai import OpenAI
+import os
 
 router = APIRouter()
 
-def auth_required(token: str):
-    payload = verify_token(token)
-    if not payload:
-        raise HTTPException(401, "Invalid token")
-    return payload
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+class ATSRequest(BaseModel):
+    resume: str
+    jd: str
+
+
+class BulkRequest(BaseModel):
+    resumes: str
+    jd: str
+
 
 @router.post("/ats")
-async def ats(data: ScreeningRequest, token: str = Depends(auth_required)):
-    result = await ats_screen(data.resume, data.jd)
+async def ats(req: ATSRequest):
 
-    await db.analytics.insert_one({"type": "ats_screen", "user": token["email"]})
-    return {"result": result}
+    if not req.resume.strip() or not req.jd.strip():
+        raise HTTPException(status_code=400, detail="Resume & JD required")
+
+    prompt = f"""
+Analyze this resume against the job description.
+
+Resume:
+{req.resume}
+
+JD:
+{req.jd}
+
+Give:
+1. ATS Score (0-100)
+2. Missing Keywords
+3. Strengths
+4. Weaknesses
+5. Improvement Tips
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.3
+        )
+        return {"result": response.choices[0].message.content.strip()}
+
+    except Exception as e:
+        print("ATS Error:", e)
+        raise HTTPException(status_code=500, detail="ATS error")
+
 
 @router.post("/bulk")
-async def bulk(data: BulkScreeningRequest, token: str = Depends(auth_required)):
-    results = await bulk_screen(data.resumes, data.jd)
+async def bulk(req: BulkRequest):
 
-    await db.analytics.insert_one({"type": "bulk_screen", "user": token["email"]})
-    return {"candidates": results}
+    resumes_list = req.resumes.split("\n\n---\n\n")
+    output = []
+
+    for idx, res in enumerate(resumes_list, start=1):
+        prompt = f"""
+Resume #{idx}:
+{res}
+
+JD:
+{req.jd}
+
+Give:
+- ATS %
+- Missing Skills
+- Summary
+"""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role":"user","content":prompt}],
+                temperature=0.3
+            )
+
+            output.append({
+                "candidate": idx,
+                "result": response.choices[0].message.content.strip()
+            })
+
+        except:
+            continue
+
+    return {"candidates": output}

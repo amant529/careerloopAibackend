@@ -5,7 +5,7 @@ import os
 
 router = APIRouter()
 
-client = OpenAI(api_key=os.getenv("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"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 class ResumeRequest(BaseModel):

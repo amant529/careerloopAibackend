@@ -5,8 +5,8 @@ import os
 
 router = APIRouter()
 
+# Create client correctly
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 
 class ResumeRequest(BaseModel):
     name: str
@@ -26,34 +26,37 @@ async def generate_resume(req: ResumeRequest):
         raise HTTPException(status_code=400, detail="Name & Job Title required")
 
     prompt = f"""
-You are a professional resume creator for Indian job market.
+You are a professional resume creator for the Indian job market.
 
-Create a full resume with these details:
+Create a full-length ATS-friendly resume based on the following info:
+
 Name: {req.name}
 Job Title: {req.title}
 Experience: {req.experience}
 Skills: {req.skills}
 Education: {req.education}
 Achievements: {req.achievements}
-Extras: {req.extras}
+Additional Info: {req.extras}
 
 Instructions:
-- Expand short info into detailed resume text
-- ATS friendly
-- No markdown
-- Only plain text resume
+- Expand all short inputs into professional full paragraphs.
+- Write a fully polished resume with all standard sections.
+- No markdown, only plain text.
+- No headings like ** or ##.
+- Make it formal, clear, and HR-ready.
 """
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4
+            temperature=0.4,
+            max_tokens=800  # ← CRITICAL FIX
         )
 
-        resume_text = response.choices[0].message.content.strip()
-        return {"resume": resume_text}
+        text = response.choices[0].message.content.strip()
+        return {"resume": text}
 
     except Exception as e:
-        print("Resume Error:", e)
-        raise HTTPException(status_code=500, detail="OpenAI error")
+        print("OPENAI ERROR:", e)  # Now you can see real errors in Render logs
+        raise HTTPException(status_code=500, detail="OpenAI processing error")

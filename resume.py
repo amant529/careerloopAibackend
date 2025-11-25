@@ -1,16 +1,13 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from groq import Groq
 import os
+import requests
 
 router = APIRouter()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-if not GROQ_API_KEY:
-    raise Exception("GROQ_API_KEY missing — set it in Render dashboard")
-
-client = Groq(api_key=GROQ_API_KEY)
 
 class ResumeRequest(BaseModel):
     name: str
@@ -20,57 +17,79 @@ class ResumeRequest(BaseModel):
     education: str = ""
     achievements: str = ""
     extras: str = ""
+    templateId: str = "classic-pro"
 
 
 @router.post("/generate")
 async def generate_resume(req: ResumeRequest):
 
     if not req.name or not req.title:
-        raise HTTPException(status_code=400, detail="Name and Job Title required")
+        raise HTTPException(status_code=400, detail="Name & Job Title required")
+
+    if not GROQ_API_KEY:
+        # This will show clearly on the frontend instead of generic "AI processing error"
+        raise HTTPException(
+            status_code=500,
+            detail="Server missing GROQ_API_KEY. Set it in your Render environment."
+        )
 
     prompt = f"""
-Create a professional ATS-friendly resume for the Indian job market.
-Return ONLY the resume. Use clear headings, bullet points and no markdown.
+You are a professional Indian resume writer.
+
+Create a detailed, ATS-friendly resume from these details:
 
 Name: {req.name}
 Job Title: {req.title}
+Experience (short notes): {req.experience}
+Skills: {req.skills}
+Education: {req.education}
+Achievements: {req.achievements}
+Extra notes: {req.extras}
 
-Experience Summary:
-{req.experience}
-
-Skills:
-{req.skills}
-
-Education:
-{req.education}
-
-Achievements:
-{req.achievements}
-
-Additional Info:
-{req.extras}
-
-FORMAT RULES:
-- Use professional clean resume structure
-- Use ALL CAPS for section headings (e.g., SUMMARY, WORK EXPERIENCE)
-- Expand short inputs into strong resume content
-- Use crisp bullet points
-- Avoid generic fluff
-- No markdown (**no** ###, **no** *)
-- Plain text resume only
-- MUST look like real resume, not paragraphs
+Rules:
+- Expand short notes into full professional bullet points.
+- Use clear section-wise structure: Summary, Skills, Experience, Education, Achievements, Projects (if relevant).
+- Tailor tone for Indian job market (freshers + 1–5 YOE).
+- Do NOT use markdown, *, ##, or any special formatting symbols.
+- Return plain text only.
 """
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-        )
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
-        resume_text = response.choices[0].message.content.strip()
+    data = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.4,
+    }
+
+    try:
+        resp = requests.post(GROQ_URL, json=data, headers=headers, timeout=60)
+
+        if resp.status_code != 200:
+            # Print full error to logs and send readable detail to frontend
+            print("Groq API Error:", resp.status_code, resp.text)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Groq error {resp.status_code}: {resp.text}"
+            )
+
+        result = resp.json()
+        resume_text = result["choices"][0]["message"]["content"].strip()
+
+        if not resume_text:
+            raise HTTPException(
+                status_code=500,
+                detail="Groq returned empty resume text."
+            )
+
         return {"resume": resume_text}
 
+    except HTTPException:
+        # re-raise cleanly
+        raise
     except Exception as e:
-        print("Resume Generation Error:", e)
+        print("Resume Error (unexpected):", str(e))
         raise HTTPException(status_code=500, detail="AI processing error")

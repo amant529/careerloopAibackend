@@ -8,4 +8,4 @@ passlib
 email-validator
 aiofiles
 Jinja2
-openai
+requests

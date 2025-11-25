@@ -9,3 +9,4 @@ email-validator
 aiofiles
 Jinja2
 requests
+groq

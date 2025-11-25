@@ -1,92 +1,61 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from openai import OpenAI
+import requests
 import os
 
 router = APIRouter()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-class ATSRequest(BaseModel):
-    resume: str
-    jd: str
+class ScreeningRequest(BaseModel):
+    resume_text: str
+    job_desc: str
 
 
-class BulkRequest(BaseModel):
-    resumes: str
-    jd: str
+@router.post("/check")
+async def screen_resume(req: ScreeningRequest):
 
-
-@router.post("/ats")
-async def ats(req: ATSRequest):
-
-    if not req.resume.strip() or not req.jd.strip():
+    if not req.resume_text or not req.job_desc:
         raise HTTPException(status_code=400, detail="Resume & JD required")
 
     prompt = f"""
-Analyze this resume against the job description.
+You are an ATS scoring engine.
 
-Resume:
-{req.resume}
+Compare this RESUME and JOB DESCRIPTION:
 
-JD:
-{req.jd}
+RESUME:
+{req.resume_text}
+
+JOB DESCRIPTION:
+{req.job_desc}
 
 Give:
-1. ATS Score (0-100)
-2. Missing Keywords
-3. Strengths
-4. Weaknesses
-5. Improvement Tips
+1. ATS Match Score (0–100)
+2. Skills matched
+3. Skills missing
+4. Suggestions to improve resume
+
+Output in clean plain text (NO markdown).
 """
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.3
+        response = requests.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": "llama-3.1-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3
+            }
         )
-        return {"result": response.choices[0].message.content.strip()}
+
+        data = response.json()
+        output = data["choices"][0]["message"]["content"]
+
+        return {"result": output}
 
     except Exception as e:
-        print("ATS Error:", e)
-        raise HTTPException(status_code=500, detail="ATS error")
-
-
-@router.post("/bulk")
-async def bulk(req: BulkRequest):
-
-    resumes_list = req.resumes.split("\n\n---\n\n")
-    output = []
-
-    for idx, res in enumerate(resumes_list, start=1):
-        prompt = f"""
-Resume #{idx}:
-{res}
-
-JD:
-{req.jd}
-
-Give:
-- ATS %
-- Missing Skills
-- Summary
-"""
-
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role":"user","content":prompt}],
-                temperature=0.3
-            )
-
-            output.append({
-                "candidate": idx,
-                "result": response.choices[0].message.content.strip()
-            })
-
-        except:
-            continue
-
-    return {"candidates": output}
+        print("Screening Error:", e)
+        raise HTTPException(status_code=500, detail="AI processing error")

@@ -10,7 +10,7 @@ app.add_middleware(
     allow_origins=[
         "https://careerloop-ai-frontend.vercel.app",
         "http://localhost:5500",
-        "*"
+        "*"  # keep for now during MVP
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -20,6 +20,7 @@ app.add_middleware(
 # ROUTES
 app.include_router(resume_router, prefix="/api/resume")
 app.include_router(screening_router, prefix="/api/screening")
+
 
 @app.get("/")
 def home():

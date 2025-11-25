@@ -1,12 +1,19 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from groq import Groq
 import os
+
+# import Groq SDK
+from groq import Groq
 
 router = APIRouter()
 
-# Groq Client
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Load API key
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    print("❗ERROR: GROQ_API_KEY missing from environment variables")
+    
+client = Groq(api_key=GROQ_API_KEY)
 
 
 class ResumeRequest(BaseModel):
@@ -14,99 +21,74 @@ class ResumeRequest(BaseModel):
     title: str
     experience: str = ""
     skills: str = ""
-    education: str = ""
     achievements: str = ""
+    education: str = ""
     extras: str = ""
-    templateId: str = "classic-pro"
 
 
 @router.post("/generate")
 async def generate_resume(req: ResumeRequest):
 
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="Server missing GROQ_API_KEY")
+
     if not req.name or not req.title:
         raise HTTPException(status_code=400, detail="Name & Job Title required")
 
-    # --------------------
-    #  MASTER PROMPT
-    # --------------------
+    # PROFESSIONAL RESUME FORMAT (Plain text, clean headings)
     prompt = f"""
-You are a professional resume writer. 
-Generate a PREMIUM, ATS-OPTIMIZED resume for the INDIAN job market.
+You are an expert Indian resume writer. 
+Generate a **professional ATS-optimized resume** in clean text (no bullet symbols like '-', '*', no markdown).
+Use **proper headings** and structured formatting.
 
-IMPORTANT:
-- Final output must be ONLY pure text.
-- NO markdown, NO symbols, NO formatting marks.
-- Keep clean spacing & structured headings.
-- Expand minimal inputs into strong professional statements.
-- Tone must be confident, crisp, and recruiter-friendly.
-- Zero fluff, zero repetition.
-
-=========================================
-USER DETAILS
-=========================================
+Details:
 Name: {req.name}
-Target Job Title: {req.title}
-Experience Summary: {req.experience}
+Job Title: {req.title}
+Experience: {req.experience}
 Skills: {req.skills}
-Education: {req.education}
 Achievements: {req.achievements}
-Additional Notes: {req.extras}
+Education: {req.education}
+Extras: {req.extras}
 
-=========================================
-RESUME FORMAT
-=========================================
+FORMAT EXACTLY LIKE THIS (ONLY TEXT):
 
-Start with:
-NAME
-Job Title
+==============================
+        {req.name.upper()}
+     {req.title}
+==============================
 
-Then include these sections EXACTLY in this order:
+SUMMARY:
+A concise 3–4 line summary written professionally.
 
-PROFILE SUMMARY
-- 3 to 5 powerful lines summarizing the candidate.
-- Expand even minimal text into a professional summary.
+EXPERIENCE:
+• Detailed professional experience written in resume tone.
 
-KEY SKILLS
-- List 6 to 12 skills as bullet points.
+SKILLS:
+• Skill1, Skill2, Skill3, ...
 
-PROFESSIONAL EXPERIENCE
-- Convert even minimal info into bullet points.
-- If no experience is given, generate an excellent fresher resume.
-- Each bullet should begin with an action verb.
+EDUCATION:
+• Degree – College – Year
 
-EDUCATION
-- List degrees, institutions, and years.
+ACHIEVEMENTS:
+• Achievement1
+• Achievement2
 
-ACHIEVEMENTS
-- Use 2 to 4 bullet points.
+ADDITIONAL INFORMATION:
+• Extra notes or preferences
 
-ADDITIONAL DETAILS
-- Add relevant strengths, work preferences, remote readiness, etc.
-
-=========================================
-FINAL INSTRUCTIONS
-=========================================
-- DO NOT use markdown.
-- DO NOT add headings not requested.
-- DO NOT add fake personal details (phone, email, address).
-- DO NOT add decorative lines or special characters.
-- Only clean resume text with proper spacing.
-=========================================
-
-Generate the full resume now:
+Make the resume look neat and structured.
 """
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=1200
+            temperature=0.4
         )
 
         resume_text = response.choices[0].message["content"].strip()
         return {"resume": resume_text}
 
     except Exception as e:
-        print("Resume Error:", e)
-        raise HTTPException(status_code=500, detail="Error generating resume")
+        print("Resume Generation Error:", e)
+        raise HTTPException(status_code=500, detail="AI processing error")

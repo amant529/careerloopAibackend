@@ -1,12 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-import requests
+from groq import Groq
 import os
 
 router = APIRouter()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Correct Groq client
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
 class ResumeRequest(BaseModel):
@@ -14,22 +14,20 @@ class ResumeRequest(BaseModel):
     title: str
     experience: str = ""
     skills: str = ""
-    achievements: str = ""
     education: str = ""
+    achievements: str = ""
     extras: str = ""
     templateId: str = "classic-pro"
 
 
 @router.post("/generate")
 async def generate_resume(req: ResumeRequest):
-
     if not req.name or not req.title:
         raise HTTPException(status_code=400, detail="Name & Job Title required")
 
     prompt = f"""
-You are an expert resume writer for Indian job market.
-
-Expand ALL short inputs into a full professional resume.
+You are a professional Indian resume creator.
+Generate a detailed ATS-friendly resume based on:
 
 Name: {req.name}
 Job Title: {req.title}
@@ -39,34 +37,22 @@ Education: {req.education}
 Achievements: {req.achievements}
 Extras: {req.extras}
 
-Write a fully formatted resume:
-- ATS optimized
-- Professional tone
-- Bullet points
-- Expand experience into detailed points
-- DO NOT use Markdown
-- Plain text only
+- Expand short points
+- Use professional tone
+- No markdown, no headings like ### or **
+- Return plain clean text only
 """
 
     try:
-        response = requests.post(
-            GROQ_URL,
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "llama-3.1-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.4
-            }
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
         )
 
-        data = response.json()
-
-        resume_text = data["choices"][0]["message"]["content"]
+        resume_text = response.choices[0].message["content"].strip()
         return {"resume": resume_text}
 
     except Exception as e:
-        print("Resume Error:", e)
+        print("Groq Resume Error:", e)
         raise HTTPException(status_code=500, detail="AI processing error")

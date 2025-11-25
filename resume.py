@@ -1,92 +1,74 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-import os
-
-# import Groq SDK
 from groq import Groq
+import os
 
 router = APIRouter()
 
-# Load API key
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
-    print("❗ERROR: GROQ_API_KEY missing from environment variables")
-    
-client = Groq(api_key=GROQ_API_KEY)
+    raise Exception("GROQ_API_KEY missing — set it in Render dashboard")
 
+client = Groq(api_key=GROQ_API_KEY)
 
 class ResumeRequest(BaseModel):
     name: str
     title: str
     experience: str = ""
     skills: str = ""
-    achievements: str = ""
     education: str = ""
+    achievements: str = ""
     extras: str = ""
 
 
 @router.post("/generate")
 async def generate_resume(req: ResumeRequest):
 
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="Server missing GROQ_API_KEY")
-
     if not req.name or not req.title:
-        raise HTTPException(status_code=400, detail="Name & Job Title required")
+        raise HTTPException(status_code=400, detail="Name and Job Title required")
 
-    # PROFESSIONAL RESUME FORMAT (Plain text, clean headings)
     prompt = f"""
-You are an expert Indian resume writer. 
-Generate a **professional ATS-optimized resume** in clean text (no bullet symbols like '-', '*', no markdown).
-Use **proper headings** and structured formatting.
+Create a professional ATS-friendly resume for the Indian job market.
+Return ONLY the resume. Use clear headings, bullet points and no markdown.
 
-Details:
 Name: {req.name}
 Job Title: {req.title}
-Experience: {req.experience}
-Skills: {req.skills}
-Achievements: {req.achievements}
-Education: {req.education}
-Extras: {req.extras}
 
-FORMAT EXACTLY LIKE THIS (ONLY TEXT):
+Experience Summary:
+{req.experience}
 
-==============================
-        {req.name.upper()}
-     {req.title}
-==============================
+Skills:
+{req.skills}
 
-SUMMARY:
-A concise 3–4 line summary written professionally.
+Education:
+{req.education}
 
-EXPERIENCE:
-• Detailed professional experience written in resume tone.
+Achievements:
+{req.achievements}
 
-SKILLS:
-• Skill1, Skill2, Skill3, ...
+Additional Info:
+{req.extras}
 
-EDUCATION:
-• Degree – College – Year
-
-ACHIEVEMENTS:
-• Achievement1
-• Achievement2
-
-ADDITIONAL INFORMATION:
-• Extra notes or preferences
-
-Make the resume look neat and structured.
+FORMAT RULES:
+- Use professional clean resume structure
+- Use ALL CAPS for section headings (e.g., SUMMARY, WORK EXPERIENCE)
+- Expand short inputs into strong resume content
+- Use crisp bullet points
+- Avoid generic fluff
+- No markdown (**no** ###, **no** *)
+- Plain text resume only
+- MUST look like real resume, not paragraphs
 """
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4
+            temperature=0.4,
         )
 
-        resume_text = response.choices[0].message["content"].strip()
+        resume_text = response.choices[0].message.content.strip()
         return {"resume": resume_text}
 
     except Exception as e:
